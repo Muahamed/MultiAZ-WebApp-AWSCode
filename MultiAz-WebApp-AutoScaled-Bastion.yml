@@ -1,0 +1,921 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+  AWS CloudFormation Template multi-tier-web-app-in-Single-vpc.template:  create a multi-tier web application in a VPC with
+  multiple subnets. The first subnet is public and contains and internet facing
+  load balancer, a NAT device  for internet access from the private subnet and an autoscaled 
+  bastion host to allow SSH access to the hosts in the private subnet. The
+  second and third subnet is private and contains a Frontend fleet of EC2 instances
+
+Parameters:
+  OperatorEMail:
+    Description: EMail address to notify if there are any scaling operations
+    Type: String
+    AllowedPattern: >-
+      ([a-zA-Z0-9_\-\.]+)@((\[[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.)|(([a-zA-Z0-9\-]+\.)+))([a-zA-Z]{2,4}|[0-9]{1,3})(\]?)
+    ConstraintDescription: must be a valid email address.
+  KeyName:
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instances
+    Type: 'AWS::EC2::KeyPair::KeyName'
+  AvailabilityZoneA:
+    Type: 'AWS::EC2::AvailabilityZone::Name'
+    Default: eu-west-1a
+    Description: Name of the first availability zone in which the servers will be created.
+  AvailabilityZoneB:
+    Type: 'AWS::EC2::AvailabilityZone::Name'
+    Default: eu-west-1b
+    Description: Name of the second availability zone in which the servers will be created.
+  SSHLocation:
+    Description: >-
+      Lockdown SSH access to the bastion host (default can be accessed from
+      anywhere)
+    Type: String
+    MinLength: '9'
+    MaxLength: '18'
+    Default: 0.0.0.0/0
+    AllowedPattern: '(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})'
+    ConstraintDescription: must be a valid CIDR range of the form x.x.x.x/x.
+  FrontendInstanceType:
+    Description: Frontend Server EC2 instance type
+    Type: String
+    Default: t2.micro
+    AllowedValues:
+      - t2.micro
+      - m1.small
+      - m1.medium
+      - m1.large
+      - m1.xlarge
+      - m2.xlarge
+      - m2.2xlarge
+      - m2.4xlarge
+      - m3.xlarge
+      - m3.2xlarge
+    ConstraintDescription: must be a valid EC2 instance type.
+  FrontendSize:
+    Description: Number of EC2 instances to launch for the Frontend server
+    Type: Number
+    Default: '1'
+  BastionInstanceType:
+    Description: Bastion Host EC2 instance type
+    Type: String
+    Default: t2.micro
+    AllowedValues:
+      - t1.micro
+      - t2.micro
+      - m1.small
+      - m1.medium
+      - m1.large
+      - m1.xlarge
+      - m2.xlarge
+      - m2.2xlarge
+      - m2.4xlarge
+      - m3.xlarge
+      - m3.2xlarge
+    ConstraintDescription: must be a valid EC2 instance type.
+  NATInstanceType:
+    Description: NET Device EC2 instance type
+    Type: String
+    Default: t2.micro
+    AllowedValues:
+      - t1.micro
+      - t2.micro
+      - m1.small
+      - m1.medium
+      - m1.large
+      - m1.xlarge
+      - m2.xlarge
+      - m2.2xlarge
+      - m2.4xlarge
+      - m3.xlarge
+      - m3.2xlarge
+    ConstraintDescription: must be a valid EC2 instance type.
+  DBName:
+    Default: pgdb
+    Description: The database name
+    Type: String
+    MinLength: '1'
+    MaxLength: '8'
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9]*'
+    ConstraintDescription: must begin with a letter and contain only alphanumeric characters.
+  DBUsername:
+    Default: root
+    NoEcho: 'true'
+    Description: The database admin account username
+    Type: String
+    MinLength: '1'
+    MaxLength: '16'
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9]*'
+    ConstraintDescription: must begin with a letter and contain only alphanumeric characters.
+  DBPassword:
+    Default: root1234
+    NoEcho: 'true'
+    Description: The database admin account password
+    Type: String
+    MinLength: '8'
+  DBClass:
+    Default: db.t2.micro
+    Description: Database instance class
+    Type: String
+    AllowedValues:
+      - db.t2.micro
+      - db.m1.small
+      - db.m1.large
+      - db.m1.xlarge
+      - db.m2.xlarge
+    ConstraintDescription: must select a valid database instance type.
+  DBAllocatedStorage:
+    Default: '5'
+    Description: The size of the database (Gb)
+    Type: Number
+    MinValue: '5'
+    MaxValue: '6144'
+    ConstraintDescription: must be between 5+
+Mappings:
+  AWSNATAMI:
+    us-east-1:
+      AMI: ami-258e1f33
+    us-east-2:
+      AMI: ami-021e3167
+    us-west-1:
+      AMI: ami-004b0f60
+    eu-west-2:
+      AMI: ami-0b707a72
+  AWSInstanceType2Arch:
+    t1.micro:
+      Arch: '64'
+    t2.micro:
+      Arch: '64'
+    m1.small:
+      Arch: '64'
+    m1.medium:
+      Arch: '64'
+    m1.large:
+      Arch: '64'
+    m1.xlarge:
+      Arch: '64'
+    m2.xlarge:
+      Arch: '64'
+    m2.2xlarge:
+      Arch: '64'
+    m2.4xlarge:
+      Arch: '64'
+    m3.xlarge:
+      Arch: '64'
+    m3.2xlarge:
+      Arch: '64'
+  AWSRegionArch2AMI:
+    us-east-1:
+      '32': ami-a0cd60c9
+      '64': ami-55ef662f
+    us-east-2:
+      '32': ami-46da5576
+      '64': ami-15e9c770
+    us-west-1:
+      '32': ami-7d4c6938
+      '64': ami-a51f27c5
+    eu-west-2:
+      '32': ami-7d4c6938
+      '64': ami-9fa343e7
+  RegionMap:
+    us-east-1:
+      '32': ami-6411e20d
+      '64': ami-da05a4a0
+    us-west-1:
+      '32': ami-c9c7978c
+      '64': ami-1c1d217c
+    us-east-2:
+      '32': ami-37c2f643
+      '64': ami-336b4456
+    us-west-2:
+      '32': ami-66f28c34
+      '64': ami-0a00ce72
+
+  SubnetConfig:
+    VPC:
+      CIDR: 10.0.0.0/16
+    Public:
+      CIDR: 10.0.3.0/24
+    Private:
+      CIDR: 10.0.1.0/24
+    Private1:
+      CIDR: 10.0.2.0/24
+Resources:
+  VPC:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: !FindInMap 
+        - SubnetConfig
+        - VPC
+        - CIDR
+      Tags:
+        - Key: Application
+          Value: !Ref 'AWS::StackId'
+        - Key: Network
+          Value: Public
+  PublicSubnet:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Ref AvailabilityZoneA
+      CidrBlock: !FindInMap 
+        - SubnetConfig
+        - Public
+        - CIDR
+      Tags:
+        - Key: Application
+          Value: !Ref 'AWS::StackId'
+        - Key: Network
+          Value: Public
+  InternetGateway:
+    Type: 'AWS::EC2::InternetGateway'
+    Properties:
+      Tags:
+        - Key: Application
+          Value: !Ref 'AWS::StackId'
+        - Key: Network
+          Value: Public
+  GatewayToInternet:
+    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+  PublicRouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Application
+          Value: !Ref 'AWS::StackId'
+        - Key: Network
+          Value: Public
+  PublicRoute:
+    Type: 'AWS::EC2::Route'
+    DependsOn: GatewayToInternet
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  PublicSubnetRouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+  PublicNetworkAcl:
+    Type: 'AWS::EC2::NetworkAcl'
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Application
+          Value: !Ref 'AWS::StackId'
+        - Key: Network
+          Value: Public
+  InboundHTTPPublicNetworkAclEntry:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      NetworkAclId: !Ref PublicNetworkAcl
+      RuleNumber: '100'
+      Protocol: '6'
+      RuleAction: allow
+      Egress: 'false'
+      CidrBlock: 0.0.0.0/0
+      PortRange:
+        From: '80'
+        To: '80'
+  InboundHTTPSPublicNetworkAclEntry:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      NetworkAclId: !Ref PublicNetworkAcl
+      RuleNumber: '101'
+      Protocol: '6'
+      RuleAction: allow
+      Egress: 'false'
+      CidrBlock: 0.0.0.0/0
+      PortRange:
+        From: '443'
+        To: '443'
+  InboundSSHPublicNetworkAclEntry:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      NetworkAclId: !Ref PublicNetworkAcl
+      RuleNumber: '102'
+      Protocol: '6'
+      RuleAction: allow
+      Egress: 'false'
+      CidrBlock: !Ref SSHLocation
+      PortRange:
+        From: '22'
+        To: '22'
+  InboundEmphemeralPublicNetworkAclEntry:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      NetworkAclId: !Ref PublicNetworkAcl
+      RuleNumber: '103'
+      Protocol: '6'
+      RuleAction: allow
+      Egress: 'false'
+      CidrBlock: 0.0.0.0/0
+      PortRange:
+        From: '1024'
+        To: '65535'
+  OutboundPublicNetworkAclEntry:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      NetworkAclId: !Ref PublicNetworkAcl
+      RuleNumber: '100'
+      Protocol: '6'
+      RuleAction: allow
+      Egress: 'true'
+      CidrBlock: 0.0.0.0/0
+      PortRange:
+        From: '0'
+        To: '65535'
+  PublicSubnetNetworkAclAssociation:
+    Type: 'AWS::EC2::SubnetNetworkAclAssociation'
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      NetworkAclId: !Ref PublicNetworkAcl
+  PrivateSubnet:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !FindInMap 
+        - SubnetConfig
+        - Private
+        - CIDR
+      AvailabilityZone: !Ref AvailabilityZoneA
+      Tags:
+        - Key: Application
+          Value: !Ref 'AWS::StackId'
+        - Key: Network
+          Value: Private
+  PrivateRouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Application
+          Value: !Ref 'AWS::StackId'
+        - Key: Network
+          Value: Private
+  PrivateSubnetRouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref PrivateSubnet
+      RouteTableId: !Ref PrivateRouteTable
+  PrivateRoute:
+    Type: 'AWS::EC2::Route'
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      InstanceId: !Ref NATDevice
+  PrivateNetworkAcl:
+    Type: 'AWS::EC2::NetworkAcl'
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Application
+          Value: !Ref 'AWS::StackId'
+        - Key: Network
+          Value: Private
+  InboundPrivateNetworkAclEntry:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      NetworkAclId: !Ref PrivateNetworkAcl
+      RuleNumber: '100'
+      Protocol: '6'
+      RuleAction: allow
+      Egress: 'false'
+      CidrBlock: 0.0.0.0/0
+      PortRange:
+        From: '0'
+        To: '65535'
+  OutBoundPrivateNetworkAclEntry:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      NetworkAclId: !Ref PrivateNetworkAcl
+      RuleNumber: '100'
+      Protocol: '6'
+      RuleAction: allow
+      Egress: 'true'
+      CidrBlock: 0.0.0.0/0
+      PortRange:
+        From: '0'
+        To: '65535'
+  PrivateSubnetNetworkAclAssociation:
+    Type: 'AWS::EC2::SubnetNetworkAclAssociation'
+    Properties:
+      SubnetId: !Ref PrivateSubnet
+      NetworkAclId: !Ref PrivateNetworkAcl
+  Private1Subnet:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !FindInMap 
+        - SubnetConfig
+        - Private1
+        - CIDR
+      AvailabilityZone: !Ref AvailabilityZoneB
+      Tags:
+        - Key: Application
+          Value: !Ref 'AWS::StackId'
+        - Key: Network
+          Value: Private1
+  Private1RouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Application
+          Value: !Ref 'AWS::StackId'
+        - Key: Network
+          Value: Private1
+  Private1SubnetRouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref Private1Subnet
+      RouteTableId: !Ref Private1RouteTable
+  Private1Route:
+    Type: 'AWS::EC2::Route'
+    Properties:
+      RouteTableId: !Ref Private1RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      InstanceId: !Ref NATDevice
+  Private1NetworkAcl:
+    Type: 'AWS::EC2::NetworkAcl'
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Application
+          Value: !Ref 'AWS::StackId'
+        - Key: Network
+          Value: Private1
+  InboundPrivate1NetworkAclEntry:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      NetworkAclId: !Ref Private1NetworkAcl
+      RuleNumber: '100'
+      Protocol: '6'
+      RuleAction: allow
+      Egress: 'false'
+      CidrBlock: 0.0.0.0/0
+      PortRange:
+        From: '0'
+        To: '65535'
+  OutBoundPrivate1NetworkAclEntry:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      NetworkAclId: !Ref Private1NetworkAcl
+      RuleNumber: '100'
+      Protocol: '6'
+      RuleAction: allow
+      Egress: 'true'
+      CidrBlock: 0.0.0.0/0
+      PortRange:
+        From: '0'
+        To: '65535'
+  Private1SubnetNetworkAclAssociation:
+    Type: 'AWS::EC2::SubnetNetworkAclAssociation'
+    Properties:
+      SubnetId: !Ref Private1Subnet
+      NetworkAclId: !Ref Private1NetworkAcl
+  NATIPAddress:
+    Type: 'AWS::EC2::EIP'
+    DependsOn: GatewayToInternet
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref NATDevice
+  NATDevice:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      InstanceType: !Ref NATInstanceType
+      KeyName: !Ref KeyName
+      SubnetId: !Ref PublicSubnet
+      SourceDestCheck: 'false'
+      ImageId: !FindInMap 
+        - AWSNATAMI
+        - !Ref 'AWS::Region'
+        - AMI
+      SecurityGroupIds:
+        - !Ref NATSecurityGroup
+  NATSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Enable internal access to the NAT device
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: '443'
+          ToPort: '443'
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: !Ref SSHLocation
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: '443'
+          ToPort: '443'
+          CidrIp: 0.0.0.0/0
+  NotificationTopic:
+    Type: 'AWS::SNS::Topic'
+    Properties:
+      Subscription:
+        - Endpoint: !Ref OperatorEMail
+          Protocol: email
+  BastionIPAddress:
+    Type: 'AWS::EC2::EIP'
+    DependsOn: GatewayToInternet
+    Properties:
+      Domain: vpc
+  BastionLaunchConfiguration:
+    Type: 'AWS::AutoScaling::LaunchConfiguration'
+    Properties:
+      AssociatePublicIpAddress: 'true'
+      ImageId: !FindInMap 
+        - RegionMap
+        - !Ref 'AWS::Region'
+        - 64
+      InstanceType: t2.micro
+      SecurityGroups:
+        - !Ref BastionSecurityGroup
+      KeyName: !Ref KeyName
+      UserData: !Base64 
+        'Fn::Join':
+          - ''
+          - - |
+              #!/bin/bash -v
+            - |
+              # Install cfn bootstraping tools
+            - |
+
+              apt-get update
+            - |
+              apt-get -y install python-setuptools python-pip
+            - >
+              easy_install
+              https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.tar.gz
+            - |
+              # Make sure we have the latest aws-ec2-assign-elastic-ip
+            - >
+              pip install aws-ec2-assign-elastic-ip==0.1.0b1 || error_exit
+              'Failed upgrading aws-ec2-assign-elastic-ip to the latest version'
+            - |
+              # Assign an Elastic IP
+            - aws-ec2-assign-elastic-ip
+            - '    --access-key '
+            - !Ref AccessKeys
+            - '    --secret-key '
+            - !GetAtt 
+              - AccessKeys
+              - SecretAccessKey
+            - '    --region '
+            - !Ref 'AWS::Region'
+            - |2
+               >> /var/log/aws-ec2-assign-elastic-ip.log
+  BastionAutoScalingGroup:
+    Type: 'AWS::AutoScaling::AutoScalingGroup'
+    Properties:
+      VPCZoneIdentifier:
+        - !Ref PublicSubnet
+      LaunchConfigurationName: !Ref BastionLaunchConfiguration
+      MinSize: '1'
+      MaxSize: '1'
+      DesiredCapacity: '1'
+      Cooldown: '30'
+      HealthCheckGracePeriod: 30
+      Tags:
+        - Key: Name
+          Value: !Ref 'AWS::StackName'
+          PropagateAtLaunch: 'true'
+  BastionSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Enable access to the Bastion host
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: '443'
+          ToPort: '443'
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: !FindInMap 
+            - SubnetConfig
+            - Private
+            - CIDR
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: !FindInMap 
+            - SubnetConfig
+            - Private1
+            - CIDR
+  PublicElasticLoadBalancer:
+    Type: 'AWS::ElasticLoadBalancing::LoadBalancer'
+    Properties:
+      SecurityGroups:
+        - !Ref PublicLoadBalancerSecurityGroup
+      Subnets:
+        - !Ref PublicSubnet
+      CrossZone: 'true'
+      Listeners:
+        - LoadBalancerPort: '80'
+          InstancePort: '80'
+          Protocol: HTTP
+      HealthCheck:
+        Target: 'HTTP:80/'
+        HealthyThreshold: '3'
+        UnhealthyThreshold: '5'
+        Interval: '90'
+        Timeout: '60'
+  PublicLoadBalancerSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Public ELB Security Group with HTTP access on port 80 from the internet
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: 0.0.0.0/0
+  FrontendFleet:
+    Type: 'AWS::AutoScaling::AutoScalingGroup'
+    Properties:
+      AvailabilityZones:
+        - !Ref AvailabilityZoneA
+        - !Ref AvailabilityZoneB
+      VPCZoneIdentifier:
+        - !Ref PrivateSubnet
+        - !Ref Private1Subnet
+      LaunchConfigurationName: !Ref FrontendServerLaunchConfig
+      MinSize: '1'
+      MaxSize: '10'
+      DesiredCapacity: !Ref FrontendSize
+      LoadBalancerNames:
+        - !Ref PublicElasticLoadBalancer
+      NotificationConfiguration:
+        TopicARN: !Ref NotificationTopic
+        NotificationTypes:
+          - 'autoscaling:EC2_INSTANCE_LAUNCH'
+          - 'autoscaling:EC2_INSTANCE_LAUNCH_ERROR'
+          - 'autoscaling:EC2_INSTANCE_TERMINATE'
+          - 'autoscaling:EC2_INSTANCE_TERMINATE_ERROR'
+      Tags:
+        - Key: Network
+          Value: Public
+          PropagateAtLaunch: 'true'
+  FrontendServerLaunchConfig:
+    Type: 'AWS::AutoScaling::LaunchConfiguration'
+    Metadata:
+      Comment1: >-
+        Configure the FrontendServer to forward /backend requests to the backend
+        servers
+      'AWS::CloudFormation::Init':
+        config:
+          packages:
+            yum:
+              httpd: []
+          files:
+            /var/www/html/index.html:
+              content: !Join 
+                - |+
+
+                - - >-
+                    <img
+                    src="https://s3.amazonaws.com/cloudformation-examples/cloudformation_graphic.png"
+                    alt="AWS CloudFormation Logo"/>
+                  - <h1>IaC challenge Completed ; Mujamil Ahamed .</h1>
+                  - >-
+                    <p>To serve a web page from the backend service, click <a
+                    href="/backend">here</a>.</p>
+                    
+              mode: '000644'
+              owner: root
+              group: root
+            /etc/httpd/conf.d/maptobackend.conf:
+              content: !Join 
+                - ''
+                - - 'ProxyPass /backend http://'
+                  - !GetAtt 
+                    - PublicElasticLoadBalancer
+                    - DNSName
+                  - |+
+
+                  - 'ProxyPassReverse /backend http://'
+                  - !GetAtt 
+                    - PublicElasticLoadBalancer
+                    - DNSName
+                  - |+
+
+              mode: '000644'
+              owner: root
+              group: root
+          services:
+            sysvinit:
+              httpd:
+                enabled: 'true'
+                ensureRunning: 'true'
+                files:
+                  - /etc/httpd/conf.d/maptobackend.conf
+                  - /var/www/html/index.html
+    Properties:
+      ImageId: !FindInMap 
+        - AWSRegionArch2AMI
+        - !Ref 'AWS::Region'
+        - 64
+      SecurityGroups:
+        - !Ref FrontendSecurityGroup
+      KeyName: !Ref KeyName
+      InstanceType: !Ref FrontendInstanceType
+      UserData: !Base64 
+        'Fn::Join':
+          - ''
+          - - |
+              #!/bin/bash -v
+            - |
+              yum update -y aws-cfn-bootstrap
+            - |
+              # Install Apache and configure as a reverse Frontend
+            - '/opt/aws/bin/cfn-init --stack '
+            - !Ref 'AWS::StackId'
+            - ' --resource FrontendServerLaunchConfig '
+            - '    --region '
+            - !Ref 'AWS::Region'
+            - |+
+
+            - |
+              # Signal completion
+            - /opt/aws/bin/cfn-signal -e $? -r "Frontend setup done" '
+            - !Ref FrontendWaitHandle
+            - |
+              '
+  WebServerScaleUpPolicy:
+    Type: 'AWS::AutoScaling::ScalingPolicy'
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref FrontendFleet
+      Cooldown: '60'
+      ScalingAdjustment: '1'
+  WebServerScaleDownPolicy:
+    Type: 'AWS::AutoScaling::ScalingPolicy'
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref FrontendFleet
+      Cooldown: '60'
+      ScalingAdjustment: '-1'
+  CPUAlarmHigh:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmDescription: Scale-up if CPU > 90% for 10 minutes
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: '300'
+      EvaluationPeriods: '2'
+      Threshold: '80'
+      AlarmActions:
+        - !Ref WebServerScaleUpPolicy
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref FrontendFleet
+      ComparisonOperator: GreaterThanThreshold
+  CPUAlarmLow:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmDescription: Scale-down if CPU < 70% for 10 minutes
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: '300'
+      EvaluationPeriods: '2'
+      Threshold: '20'
+      AlarmActions:
+        - !Ref WebServerScaleDownPolicy
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref FrontendFleet
+      ComparisonOperator: LessThanThreshold
+  FrontendSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: >-
+        Allow access from load balancer and bastion as well as outbound HTTP and
+        HTTPS traffic
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          SourceSecurityGroupId: !Ref PublicLoadBalancerSecurityGroup
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          SourceSecurityGroupId: !Ref BastionSecurityGroup
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: '443'
+          ToPort: '443'
+          CidrIp: 0.0.0.0/0
+  FrontendWaitHandle:
+    Type: 'AWS::CloudFormation::WaitConditionHandle'
+  FrontendWaitCondition:
+    Type: 'AWS::CloudFormation::WaitCondition'
+    DependsOn: FrontendFleet
+    Properties:
+      Handle: !Ref FrontendWaitHandle
+      Timeout: '300'
+      Count: !Ref FrontendSize
+  User:
+    Type: 'AWS::IAM::User'
+    Properties:
+      Path: /
+      Policies:
+        - PolicyName: cloudformation
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'cloudformation:DescribeStackResource'
+                  - 'ec2:*'
+                Resource: '*'
+  AccessKeys:
+    Type: 'AWS::IAM::AccessKey'
+    Properties:
+      UserName: !Ref User
+  myDBEC2SecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Frontend Access
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: 10.0.0.0/16
+  myDBParamGroup:
+    Type: 'AWS::RDS::DBParameterGroup'
+    Properties:
+      Description: Database Parameter Group + pg_stat_statements
+      Family: postgres9.6
+      Parameters:
+        shared_preload_libraries: pg_stat_statements
+  myDBSubnetGroup:
+    Type: 'AWS::RDS::DBSubnetGroup'
+    Properties:
+      DBSubnetGroupDescription: DB Private Subnet
+      SubnetIds:
+        - !Ref PrivateSubnet
+        - !Ref Private1Subnet
+  pgDB:
+    Type: 'AWS::RDS::DBInstance'
+    Properties:
+      DBName: !Ref DBName
+      AllocatedStorage: !Ref DBAllocatedStorage
+      DBInstanceClass: !Ref DBClass
+      Engine: postgres
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+      DBSubnetGroupName: !Ref myDBSubnetGroup
+      DBParameterGroupName: !Ref myDBParamGroup
+      VPCSecurityGroups:
+        - !GetAtt 
+          - myDBEC2SecurityGroup
+          - GroupId
+Outputs:
+  WebSite:
+    Description: URL of the website
+    Value: !Join 
+      - ''
+      - - 'http://'
+        - !GetAtt 
+          - PublicElasticLoadBalancer
+          - DNSName
+  Bastion:
+    Description: IP Address of the Bastion host
+    Value: !Ref BastionIPAddress
