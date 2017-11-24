@@ -553,8 +553,6 @@ Resources:
               #!/bin/bash -v
             - |
               # Install cfn bootstraping tools
-            - |
-              apt-get -y install software-properties-common
             - | 
               apt-get update
             - | 
