@@ -24,6 +24,12 @@ Parameters:
     Type: 'AWS::EC2::AvailabilityZone::Name'
     Default: eu-west-1b
     Description: Name of the second availability zone in which the servers will be created.
+
+  SubnetIpBlocks: 
+    Description: "Comma-delimited list of three CIDR blocks VPC,Private,Private1 and Public Respectively"
+    Type: CommaDelimitedList
+    Default: "10.0.0.0/16, 10.0.1.0/24, 10.0.2.0/24, 10.0.3.0/24"
+
   SSHLocation:
     Description: >-
       Lockdown SSH access to the bastion host (default can be accessed from
@@ -189,23 +195,12 @@ Mappings:
       '32': ami-66f28c34
       '64': ami-0a00ce72
 
-  SubnetConfig:
-    VPC:
-      CIDR: 10.0.0.0/16
-    Public:
-      CIDR: 10.0.3.0/24
-    Private:
-      CIDR: 10.0.1.0/24
-    Private1:
-      CIDR: 10.0.2.0/24
+
 Resources:
   VPC:
     Type: 'AWS::EC2::VPC'
     Properties:
-      CidrBlock: !FindInMap 
-        - SubnetConfig
-        - VPC
-        - CIDR
+      CidrBlock: !Select [0, !Ref SubnetIpBlocks]
       Tags:
         - Key: Application
           Value: !Ref 'AWS::StackId'
@@ -216,10 +211,7 @@ Resources:
     Properties:
       VpcId: !Ref VPC
       AvailabilityZone: !Ref AvailabilityZoneA
-      CidrBlock: !FindInMap 
-        - SubnetConfig
-        - Public
-        - CIDR
+      CidrBlock: !Select [3, !Ref SubnetIpBlocks]
       Tags:
         - Key: Application
           Value: !Ref 'AWS::StackId'
@@ -264,10 +256,7 @@ Resources:
     Type: 'AWS::EC2::Subnet'
     Properties:
       VpcId: !Ref VPC
-      CidrBlock: !FindInMap 
-        - SubnetConfig
-        - Private
-        - CIDR
+      CidrBlock: !Select [1, !Ref SubnetIpBlocks]
       AvailabilityZone: !Ref AvailabilityZoneA
       Tags:
         - Key: Application
@@ -299,10 +288,7 @@ Resources:
     Type: 'AWS::EC2::Subnet'
     Properties:
       VpcId: !Ref VPC
-      CidrBlock: !FindInMap 
-        - SubnetConfig
-        - Private1
-        - CIDR
+      CidrBlock: !Select [2, !Ref SubnetIpBlocks]
       AvailabilityZone: !Ref AvailabilityZoneB
       Tags:
         - Key: Application
@@ -470,17 +456,11 @@ Resources:
         - IpProtocol: tcp
           FromPort: '22'
           ToPort: '22'
-          CidrIp: !FindInMap 
-            - SubnetConfig
-            - Private
-            - CIDR
+          CidrIp: !Select [1, !Ref SubnetIpBlocks]
         - IpProtocol: tcp
           FromPort: '22'
           ToPort: '22'
-          CidrIp: !FindInMap 
-            - SubnetConfig
-            - Private1
-            - CIDR
+          CidrIp: !Select [2, !Ref SubnetIpBlocks]
         - IpProtocol: tcp
           FromPort: '80'
           ToPort: '80'
@@ -714,6 +694,14 @@ Resources:
       Handle: !Ref FrontendWaitHandle
       Timeout: '300'
       Count: !Ref FrontendSize
+  
+  s3bucket:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      AccessControl: PublicRead
+      WebsiteConfiguration:
+        ErrorDocument: index.html
+        IndexDocument: index.html  
   User:
     Type: 'AWS::IAM::User'
     Properties:
@@ -727,6 +715,23 @@ Resources:
                   - 'cloudformation:DescribeStackResource'
                   - 'ec2:*'
                 Resource: '*'
+  bucketpolicy:
+    Type: "AWS::S3::BucketPolicy"
+    Properties:
+      Bucket: !Ref s3bucket
+      PolicyDocument:
+        Statement:
+          -
+            Sid: "InstancePerm"
+            Action:
+              - "s3:GetObject"
+              - "s3:PutObject"
+            Effect: Allow
+            Resource: !Join ["", ["arn:aws:s3:::", !Ref s3bucket, "/*"]]
+            Principal:
+              AWS:
+                - "*"
+
   AccessKeys:
     Type: 'AWS::IAM::AccessKey'
     Properties:
