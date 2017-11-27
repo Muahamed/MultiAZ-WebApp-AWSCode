@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: 2010-09-09
 Description: >-
   AWS CloudFormation Template multi-tier-web-app-in-Single-vpc.template:  create
-  a multi-tier web application in a VPC with multiple subnets. The first subnet
+  a multi-tier web application in a VPC with multiple subnets. The first 2 subnet
   is public and contains and internet facing load balancer, a NAT device  for
   internet access from the private subnet and an autoscaled  bastion host to
   allow SSH access to the hosts in the private subnet. The second and third
