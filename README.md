@@ -20,7 +20,9 @@ Multi Tier Web Application with following Components  :
 13)
 
 
-Architecture Block will be attach soon.
+Architecture Block 
+
+![alt Arch](https://github.com/Muahamed/MultiAZ-WebApp-AWSCode/blob/master/new-designer.png)
 
 
 Note : Above stack tested Successfully On US-East-2 Region.
