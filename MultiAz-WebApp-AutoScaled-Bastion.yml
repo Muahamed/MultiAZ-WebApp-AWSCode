@@ -1,11 +1,11 @@
 AWSTemplateFormatVersion: 2010-09-09
 Description: >-
-  AWS CloudFormation Template multi-tier-web-app-in-Single-vpc.template:  create a multi-tier web application in a VPC with
-  multiple subnets. The first subnet is public and contains and internet facing
-  load balancer, a NAT device  for internet access from the private subnet and an autoscaled 
-  bastion host to allow SSH access to the hosts in the private subnet. The
-  second and third subnet is private and contains a Frontend fleet of EC2 instances
-
+  AWS CloudFormation Template multi-tier-web-app-in-Single-vpc.template:  create
+  a multi-tier web application in a VPC with multiple subnets. The first subnet
+  is public and contains and internet facing load balancer, a NAT device  for
+  internet access from the private subnet and an autoscaled  bastion host to
+  allow SSH access to the hosts in the private subnet. The second and third
+  subnet is private and contains a Frontend fleet of EC2 instances
 Parameters:
   OperatorEMail:
     Description: EMail address to notify if there are any scaling operations
@@ -24,12 +24,12 @@ Parameters:
     Type: 'AWS::EC2::AvailabilityZone::Name'
     Default: eu-west-1b
     Description: Name of the second availability zone in which the servers will be created.
-
-  SubnetIpBlocks: 
-    Description: "Comma-delimited list of three CIDR blocks VPC,Private,Private1 and Public Respectively"
+  SubnetIpBlocks:
+    Description: >-
+      Comma-delimited list of three CIDR blocks VPC,Private,Private1 and Public
+      Respectively
     Type: CommaDelimitedList
-    Default: "10.0.0.0/16, 10.0.1.0/24, 10.0.2.0/24, 10.0.3.0/24"
-
+    Default: '10.0.0.0/16, 10.0.1.0/24, 10.0.2.0/24, 10.0.3.0/24, 10.0.4.0/24'
   SSHLocation:
     Description: >-
       Lockdown SSH access to the bastion host (default can be accessed from
@@ -194,13 +194,13 @@ Mappings:
     us-west-2:
       '32': ami-66f28c34
       '64': ami-0a00ce72
-
-
 Resources:
   VPC:
     Type: 'AWS::EC2::VPC'
     Properties:
-      CidrBlock: !Select [0, !Ref SubnetIpBlocks]
+      CidrBlock: !Select 
+        - 0
+        - !Ref SubnetIpBlocks
       Tags:
         - Key: Application
           Value: !Ref 'AWS::StackId'
@@ -211,7 +211,9 @@ Resources:
     Properties:
       VpcId: !Ref VPC
       AvailabilityZone: !Ref AvailabilityZoneA
-      CidrBlock: !Select [3, !Ref SubnetIpBlocks]
+      CidrBlock: !Select 
+        - 3
+        - !Ref SubnetIpBlocks
       Tags:
         - Key: Application
           Value: !Ref 'AWS::StackId'
@@ -251,18 +253,56 @@ Resources:
     Properties:
       SubnetId: !Ref PublicSubnet
       RouteTableId: !Ref PublicRouteTable
-  
+  Public1Subnet:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Ref AvailabilityZoneB
+      CidrBlock: !Select 
+        - 4
+        - !Ref SubnetIpBlocks
+      Tags:
+        - Key: Application
+          Value: !Ref 'AWS::StackId'
+        - Key: Network
+          Value: Public1
+  Public1RouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Application
+          Value: !Ref 'AWS::StackId'
+        - Key: Network
+          Value: Public1
+  Public1Route:
+    Type: 'AWS::EC2::Route'
+    DependsOn: GatewayToInternet
+    Properties:
+      RouteTableId: !Ref Public1RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+      
+  Public1SubnetRouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref Public1Subnet
+      RouteTableId: !Ref Public1RouteTable
+      
   PrivateSubnet:
     Type: 'AWS::EC2::Subnet'
     Properties:
       VpcId: !Ref VPC
-      CidrBlock: !Select [1, !Ref SubnetIpBlocks]
+      CidrBlock: !Select 
+        - 1
+        - !Ref SubnetIpBlocks
       AvailabilityZone: !Ref AvailabilityZoneA
       Tags:
         - Key: Application
           Value: !Ref 'AWS::StackId'
         - Key: Network
           Value: Private
+   
   PrivateRouteTable:
     Type: 'AWS::EC2::RouteTable'
     Properties:
@@ -283,12 +323,13 @@ Resources:
       RouteTableId: !Ref PrivateRouteTable
       DestinationCidrBlock: 0.0.0.0/0
       InstanceId: !Ref NATDevice
-  
   Private1Subnet:
     Type: 'AWS::EC2::Subnet'
     Properties:
       VpcId: !Ref VPC
-      CidrBlock: !Select [2, !Ref SubnetIpBlocks]
+      CidrBlock: !Select 
+        - 2
+        - !Ref SubnetIpBlocks
       AvailabilityZone: !Ref AvailabilityZoneB
       Tags:
         - Key: Application
@@ -315,8 +356,6 @@ Resources:
       RouteTableId: !Ref Private1RouteTable
       DestinationCidrBlock: 0.0.0.0/0
       InstanceId: !Ref NATDevice
-  
-  
   NATIPAddress:
     Type: 'AWS::EC2::EIP'
     DependsOn: GatewayToInternet
@@ -456,11 +495,15 @@ Resources:
         - IpProtocol: tcp
           FromPort: '22'
           ToPort: '22'
-          CidrIp: !Select [1, !Ref SubnetIpBlocks]
+          CidrIp: !Select 
+            - 1
+            - !Ref SubnetIpBlocks
         - IpProtocol: tcp
           FromPort: '22'
           ToPort: '22'
-          CidrIp: !Select [2, !Ref SubnetIpBlocks]
+          CidrIp: !Select 
+            - 2
+            - !Ref SubnetIpBlocks
         - IpProtocol: tcp
           FromPort: '80'
           ToPort: '80'
@@ -469,7 +512,6 @@ Resources:
           FromPort: '443'
           ToPort: '443'
           CidrIp: 0.0.0.0/0
-          
   PublicElasticLoadBalancer:
     Type: 'AWS::ElasticLoadBalancing::LoadBalancer'
     Properties:
@@ -477,6 +519,7 @@ Resources:
         - !Ref PublicLoadBalancerSecurityGroup
       Subnets:
         - !Ref PublicSubnet
+        - !Ref Public1Subnet
       CrossZone: 'true'
       Listeners:
         - LoadBalancerPort: '80'
@@ -553,7 +596,6 @@ Resources:
                   - >-
                     <p>To serve a web page from the backend service, click <a
                     href="/backend">here</a>.</p>
-                    
               mode: '000644'
               owner: root
               group: root
@@ -694,14 +736,13 @@ Resources:
       Handle: !Ref FrontendWaitHandle
       Timeout: '300'
       Count: !Ref FrontendSize
-  
   s3bucket:
-    Type: "AWS::S3::Bucket"
+    Type: 'AWS::S3::Bucket'
     Properties:
       AccessControl: PublicRead
       WebsiteConfiguration:
         ErrorDocument: index.html
-        IndexDocument: index.html  
+        IndexDocument: index.html
   User:
     Type: 'AWS::IAM::User'
     Properties:
@@ -716,22 +757,24 @@ Resources:
                   - 'ec2:*'
                 Resource: '*'
   bucketpolicy:
-    Type: "AWS::S3::BucketPolicy"
+    Type: 'AWS::S3::BucketPolicy'
     Properties:
       Bucket: !Ref s3bucket
       PolicyDocument:
         Statement:
-          -
-            Sid: "InstancePerm"
+          - Sid: InstancePerm
             Action:
-              - "s3:GetObject"
-              - "s3:PutObject"
+              - 's3:GetObject'
+              - 's3:PutObject'
             Effect: Allow
-            Resource: !Join ["", ["arn:aws:s3:::", !Ref s3bucket, "/*"]]
+            Resource: !Join 
+              - ''
+              - - 'arn:aws:s3:::'
+                - !Ref s3bucket
+                - /*
             Principal:
               AWS:
-                - "*"
-
+                - '*'
   AccessKeys:
     Type: 'AWS::IAM::AccessKey'
     Properties:
